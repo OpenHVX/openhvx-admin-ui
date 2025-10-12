@@ -1,7 +1,7 @@
 <!-- src/views/admin/Tenants.vue -->
 <template>
   <div class="page">
-    <!-- ===== Toolbar (title + quick actions) ===== -->
+    <!-- ===== Toolbar ===== -->
     <page-toolbar
       title="Tenants"
       subtitle="Manage tenant spaces"
@@ -9,7 +9,6 @@
     >
       <template #actions>
         <n-space :size="8" wrap>
-          <!-- Quick search: id or display name -->
           <n-input
             v-model:value="q"
             size="small"
@@ -17,12 +16,11 @@
             clearable
             style="max-width: 260px"
           >
-            <template #prefix>
-              <n-icon><SearchOutline /></n-icon>
-            </template>
+            <template #prefix
+              ><n-icon><SearchOutline /></n-icon
+            ></template>
           </n-input>
 
-          <!-- Manual refresh (useful if autosync isn't hooked yet) -->
           <n-button
             size="small"
             quaternary
@@ -30,24 +28,23 @@
             @click="fetchRows"
             title="Refresh"
           >
-            <template #icon>
-              <n-icon><RefreshOutline /></n-icon>
-            </template>
+            <template #icon
+              ><n-icon><RefreshOutline /></n-icon
+            ></template>
             Refresh
           </n-button>
 
-          <!-- Create a new tenant -->
           <n-button size="small" type="primary" @click="openCreate">
-            <template #icon>
-              <n-icon><AddOutline /></n-icon>
-            </template>
+            <template #icon
+              ><n-icon><AddOutline /></n-icon
+            ></template>
             New tenant
           </n-button>
         </n-space>
       </template>
     </page-toolbar>
 
-    <!-- ===== Tenants table ===== -->
+    <!-- ===== Table ===== -->
     <n-card :bordered="true" size="small">
       <n-data-table
         :loading="loading"
@@ -60,9 +57,8 @@
       />
     </n-card>
 
-    <!-- ===== Create / Edit drawer =====
-         Keep the surface small and focused; we only edit core metadata here. -->
-    <n-drawer v-model:show="drawer.show" :width="420" placement="right">
+    <!-- ===== Drawer: Create / Edit tenant (core metadata + initial quotas) ===== -->
+    <n-drawer v-model:show="drawer.show" :width="480" placement="right">
       <n-drawer-content
         :title="drawer.mode === 'create' ? 'New tenant' : 'Edit tenant'"
       >
@@ -91,6 +87,71 @@
               :autosize="{ minRows: 3, maxRows: 6 }"
             />
           </n-form-item>
+
+          <n-divider>Initial quotas (optional)</n-divider>
+          <n-grid :cols="2" :x-gap="12" :y-gap="8">
+            <n-gi>
+              <n-form-item label="vCPU limit" path="quotas.cpu">
+                <n-input-number
+                  v-model:value="form.quotas.cpu"
+                  :min="-1"
+                  placeholder="e.g. 16"
+                  :show-button="false"
+                />
+              </n-form-item>
+            </n-gi>
+            <n-gi>
+              <n-form-item label="VM count limit" path="quotas.vmCount">
+                <n-input-number
+                  v-model:value="form.quotas.vmCount"
+                  :min="-1"
+                  placeholder="e.g. 10"
+                  :show-button="false"
+                />
+              </n-form-item>
+            </n-gi>
+
+            <n-gi>
+              <n-form-item label="Memory limit (GB)" path="quotas.memoryGB">
+                <n-input-number
+                  v-model:value="form.memoryGB"
+                  :min="-1"
+                  placeholder="e.g. 32"
+                  :show-button="false"
+                />
+              </n-form-item>
+              <n-text depth="3" style="font-size: 12px"
+                >Stored in MB (we'll convert)</n-text
+              >
+            </n-gi>
+            <n-gi>
+              <n-form-item label="Storage limit (GB)" path="quotas.storageGB">
+                <n-input-number
+                  v-model:value="form.storageGB"
+                  :min="-1"
+                  placeholder="e.g. 500"
+                  :show-button="false"
+                />
+              </n-form-item>
+              <n-text depth="3" style="font-size: 12px"
+                >Stored in MB (we'll convert)</n-text
+              >
+            </n-gi>
+
+            <n-gi :span="2">
+              <n-form-item label="Networks limit" path="quotas.networkCount">
+                <n-input-number
+                  v-model:value="form.quotas.networkCount"
+                  :min="-1"
+                  placeholder="e.g. 5"
+                  :show-button="false"
+                />
+              </n-form-item>
+            </n-gi>
+          </n-grid>
+          <n-text depth="3" style="font-size: 12px"
+            >Use <code>-1</code> for unlimited.</n-text
+          >
         </n-form>
 
         <template #footer>
@@ -103,15 +164,142 @@
         </template>
       </n-drawer-content>
     </n-drawer>
+
+    <!-- ===== Drawer: Manage quotas (per-tenant) ===== -->
+    <n-drawer v-model:show="qDrawer.show" :width="520" placement="right">
+      <n-drawer-content :title="`Quotas — ${qDrawer.tenantId}`">
+        <n-alert
+          v-if="qDrawer.error"
+          type="error"
+          :bordered="false"
+          style="margin-bottom: 8px"
+        >
+          {{ qDrawer.error }}
+        </n-alert>
+
+        <n-skeleton v-if="qDrawer.loading" text :repeat="6" />
+
+        <template v-else>
+          <n-descriptions
+            bordered
+            size="small"
+            label-placement="top"
+            :column="2"
+            style="margin-bottom: 12px"
+          >
+            <n-descriptions-item label="vCPU">
+              <quota-meter
+                :used="qState.cpu.used"
+                :limit="qState.cpu.limit"
+                unit="vCPU"
+              />
+            </n-descriptions-item>
+            <n-descriptions-item label="VMs">
+              <quota-meter
+                :used="qState.vmCount.used"
+                :limit="qState.vmCount.limit"
+                unit="VM"
+              />
+            </n-descriptions-item>
+            <n-descriptions-item label="Memory">
+              <quota-meter
+                :used="qState.memoryMB.used"
+                :limit="qState.memoryMB.limit"
+                unit="MB"
+                :format="fmtMBorGB"
+              />
+            </n-descriptions-item>
+            <n-descriptions-item label="Storage">
+              <quota-meter
+                :used="qState.storageMB.used"
+                :limit="qState.storageMB.limit"
+                unit="MB"
+                :format="fmtMBorGB"
+              />
+            </n-descriptions-item>
+            <n-descriptions-item label="Networks">
+              <quota-meter
+                :used="qState.networkCount.used"
+                :limit="qState.networkCount.limit"
+                unit="net"
+              />
+            </n-descriptions-item>
+          </n-descriptions>
+
+          <n-divider>Update limits</n-divider>
+          <n-grid :cols="2" :x-gap="12" :y-gap="8">
+            <n-gi>
+              <n-form-item label="vCPU limit">
+                <n-input-number
+                  v-model:value="qForm.cpu"
+                  :min="-1"
+                  :show-button="false"
+                />
+              </n-form-item>
+            </n-gi>
+            <n-gi>
+              <n-form-item label="VM count limit">
+                <n-input-number
+                  v-model:value="qForm.vmCount"
+                  :min="-1"
+                  :show-button="false"
+                />
+              </n-form-item>
+            </n-gi>
+            <n-gi>
+              <n-form-item label="Memory limit (GB)">
+                <n-input-number
+                  v-model:value="qForm.memoryGB"
+                  :min="-1"
+                  :show-button="false"
+                />
+              </n-form-item>
+            </n-gi>
+            <n-gi>
+              <n-form-item label="Storage limit (GB)">
+                <n-input-number
+                  v-model:value="qForm.storageGB"
+                  :min="-1"
+                  :show-button="false"
+                />
+              </n-form-item>
+            </n-gi>
+            <n-gi :span="2">
+              <n-form-item label="Networks limit">
+                <n-input-number
+                  v-model:value="qForm.networkCount"
+                  :min="-1"
+                  :show-button="false"
+                />
+              </n-form-item>
+            </n-gi>
+          </n-grid>
+          <n-text depth="3" style="font-size: 12px"
+            >Use <code>-1</code> for unlimited. GB inputs will be converted to
+            MB.</n-text
+          >
+
+          <n-space justify="end" style="margin-top: 12px">
+            <n-button
+              :loading="qDrawer.saving"
+              type="primary"
+              @click="saveQuotaLimits"
+              >Save limits</n-button
+            >
+          </n-space>
+        </template>
+
+        <template #footer>
+          <n-space justify="end">
+            <n-button quaternary @click="qDrawer.show = false">Close</n-button>
+          </n-space>
+        </template>
+      </n-drawer-content>
+    </n-drawer>
   </div>
 </template>
 
 <script setup>
-/*
-  Tenants screen (admin).
-  - Keep actions discoverable: row is clickable, kebab menu for destructive ops.
-  - Drawer handles both create & edit to reduce surface.
-*/
 import {
   NCard,
   NDataTable,
@@ -124,8 +312,17 @@ import {
   NForm,
   NFormItem,
   NDropdown,
+  NGrid,
+  NGi,
+  NDivider,
   useMessage,
   useDialog,
+  NInputNumber,
+  NText,
+  NAlert,
+  NDescriptions,
+  NDescriptionsItem,
+  NSkeleton,
 } from "naive-ui";
 import {
   SearchOutline,
@@ -136,32 +333,111 @@ import {
   CreateOutline,
   EllipsisHorizontal,
 } from "@vicons/ionicons5";
-import { h, onMounted, ref, computed } from "vue";
+import { h, onMounted, ref, computed, defineComponent } from "vue";
 import PageToolbar from "@/components/common/PageToolbar.vue";
+import { useRouter } from "vue-router";
 import {
   listTenants,
   createTenant,
   updateTenant,
   deleteTenant,
+  getTenantQuotas,
+  patchTenantQuotaLimits,
 } from "@/api/tenants";
-import { useRouter } from "vue-router";
 
-/* ----- routing / UI services ----- */
+/* ----- tiny quota meter component ----- */
+const QuotaMeter = defineComponent({
+  name: "quota-meter",
+  props: { used: Number, limit: Number, unit: String, format: Function },
+  setup(props) {
+    const pct = computed(() => {
+      if (props.limit === -1) return 0;
+      if (!props.limit) return 1;
+      return Math.min(1, (props.used || 0) / props.limit);
+    });
+    const label = computed(() => {
+      const f = props.format || ((v) => `${v} ${props.unit || ""}`.trim());
+      if (props.limit === -1) return `${f(props.used || 0)} / ∞`;
+      return `${f(props.used || 0)} / ${f(props.limit || 0)}`;
+    });
+    const barStyle = computed(() => {
+      const p = Math.round(pct.value * 100);
+      let bg = "var(--n-success-color)";
+      if (p >= 95) bg = "var(--n-error-color)";
+      else if (p >= 80) bg = "var(--n-warning-color)";
+      return {
+        width: `${props.limit === -1 ? 0 : p}%`,
+        background: bg,
+        height: "6px",
+        borderRadius: "4px",
+      };
+    });
+    return () =>
+      h("div", { style: "display:flex; flex-direction:column; gap:6px;" }, [
+        h(
+          "div",
+          {
+            style:
+              "background: var(--n-divider-color); height:6px; border-radius:4px; overflow:hidden;",
+          },
+          [h("div", { style: barStyle.value })]
+        ),
+        h(
+          "div",
+          { style: "font-size:12px; color: var(--n-text-color-3)" },
+          label.value
+        ),
+      ]);
+  },
+});
+/* register locally */
+const quotaMeter = QuotaMeter;
+
 const router = useRouter();
 const message = useMessage();
 const dialog = useDialog();
 
-/* ----- reactive state ----- */
+/* ----- state ----- */
 const loading = ref(true);
 const rows = ref([]);
 const q = ref("");
 
 const drawer = ref({ show: false, mode: "create", editingId: null });
 const formRef = ref(null);
-const form = ref({ tenantId: "", name: "", description: "" });
+const form = ref({
+  tenantId: "",
+  name: "",
+  description: "",
+  quotas: { cpu: null, vmCount: null, networkCount: null },
+  memoryGB: null, // convenience inputs
+  storageGB: null,
+});
 const saving = ref(false);
 
-/* ----- validation rules (keep messages short and useful) ----- */
+/* Quotas drawer */
+const qDrawer = ref({
+  show: false,
+  tenantId: "",
+  loading: false,
+  saving: false,
+  error: "",
+});
+const qState = ref({
+  cpu: {},
+  memoryMB: {},
+  storageMB: {},
+  vmCount: {},
+  networkCount: {},
+}); // server state
+const qForm = ref({
+  cpu: null,
+  vmCount: null,
+  networkCount: null,
+  memoryGB: null,
+  storageGB: null,
+});
+
+/* ----- rules ----- */
 const rules = {
   tenantId: [
     {
@@ -180,14 +456,14 @@ const rules = {
   ],
 };
 
-/* ----- small helpers ----- */
+/* helpers */
 const renderIcon = (icon) => () => h(NIcon, null, { default: () => h(icon) });
 
-/* Row menu: keep the wording explicit, avoid surprises */
 function makeRowMenu(row) {
   return [
     { key: "open", label: "View resources", icon: renderIcon(OpenOutline) },
     { key: "edit", label: "Edit", icon: renderIcon(CreateOutline) },
+    { key: "quota", label: "Manage quotas", icon: renderIcon(CreateOutline) },
     { type: "divider" },
     {
       key: "del",
@@ -197,14 +473,13 @@ function makeRowMenu(row) {
     },
   ];
 }
-
 function onRowMenuSelect(key, row) {
   if (key === "open") return goResources(row);
   if (key === "edit") return openEdit(row);
+  if (key === "quota") return openQuotaDrawer(row);
   if (key === "del") return confirmDelete(row);
 }
 
-/* Row click should navigate, unless the click was on a control element */
 const rowProps = (row) => ({
   style: "cursor:pointer",
   onClick: (e) => {
@@ -216,12 +491,10 @@ const rowProps = (row) => ({
     goResources(row);
   },
 });
-
 function rowKey(r) {
   return r.tenantId || r.id;
 }
 
-/* ----- filtering (id + name) ----- */
 const filteredRows = computed(() => {
   const term = (q.value || "").toLowerCase().trim();
   if (!term) return rows.value;
@@ -232,18 +505,22 @@ const filteredRows = computed(() => {
   });
 });
 
-/* Quick, readable date formatting for the list */
 function fmtDate(v) {
   if (!v) return "—";
   try {
-    const d = new Date(v);
-    return d.toLocaleString();
+    return new Date(v).toLocaleString();
   } catch {
     return String(v);
   }
 }
+function fmtMBorGB(v) {
+  if (v === -1) return "∞";
+  if (v == null) return "0";
+  const gb = v / 1024;
+  return gb >= 1 ? `${Math.round(gb)} GB` : `${v} MB`;
+}
 
-/* ----- table columns ----- */
+/* columns */
 const cols = [
   {
     title: "Tenant",
@@ -280,7 +557,7 @@ const cols = [
   {
     title: "",
     key: "actions",
-    width: 60,
+    width: 80,
     align: "right",
     render: (r) =>
       h(
@@ -310,14 +587,13 @@ const cols = [
   },
 ];
 
-/* ----- data loading ----- */
+/* data */
 async function fetchRows() {
   loading.value = true;
   try {
     const raw = await listTenants();
     const data = raw?.data?.data;
-    // Handle both array and { items, total } shapes
-    rows.value = Array.isArray(data) ? data : data.items || [];
+    rows.value = Array.isArray(data) ? data : data?.items || [];
   } catch (e) {
     message.error(
       e?.response?.data?.error || e.message || "Failed to load tenants"
@@ -327,19 +603,46 @@ async function fetchRows() {
   }
 }
 
-/* ----- create / edit flow ----- */
+/* create/edit */
 function openCreate() {
   drawer.value = { show: true, mode: "create", editingId: null };
-  form.value = { tenantId: "", name: "", description: "" };
+  form.value = {
+    tenantId: "",
+    name: "",
+    description: "",
+    quotas: { cpu: null, vmCount: null, networkCount: null },
+    memoryGB: null,
+    storageGB: null,
+  };
 }
-
 function openEdit(r) {
   drawer.value = { show: true, mode: "edit", editingId: r.tenantId || r.id };
   form.value = {
     tenantId: r.tenantId || r.id,
     name: r.name || r.displayName || "",
     description: r.description || "",
+    quotas: { cpu: null, vmCount: null, networkCount: null },
+    memoryGB: null,
+    storageGB: null,
   };
+}
+
+function toLimitsFromForm(f) {
+  // build flat limits from drawer form (skip null/undefined)
+  const limits = {};
+  const add = (k, v) => {
+    if (v === 0 || v === -1 || !!v) limits[k] = Number(v);
+  };
+  add("cpu", f.quotas.cpu);
+  add("vmCount", f.quotas.vmCount);
+  add("networkCount", f.quotas.networkCount);
+  if (f.memoryGB === -1) limits.memoryMB = -1;
+  else if (f.memoryGB || f.memoryGB === 0)
+    limits.memoryMB = Math.max(0, Math.round(f.memoryGB * 1024));
+  if (f.storageGB === -1) limits.storageMB = -1;
+  else if (f.storageGB || f.storageGB === 0)
+    limits.storageMB = Math.max(0, Math.round(f.storageGB * 1024));
+  return limits;
 }
 
 async function onSubmit() {
@@ -347,29 +650,40 @@ async function onSubmit() {
   saving.value = true;
   try {
     if (drawer.value.mode === "create") {
-      await createTenant({
+      const payload = {
         tenantId: form.value.tenantId,
         name: form.value.name,
         description: form.value.description,
-      });
+      };
+      const limits = toLimitsFromForm(form.value);
+      if (Object.keys(limits).length) payload.quotas = limits;
+      await createTenant(payload);
       message.success("Tenant created");
     } else {
-      await updateTenant(drawer.value.editingId, {
+      const payload = {
         name: form.value.name,
         description: form.value.description,
-      });
+      };
+      const limits = toLimitsFromForm(form.value);
+      if (Object.keys(limits).length) payload.quotas = limits;
+      await updateTenant(drawer.value.editingId, payload);
       message.success("Tenant updated");
     }
     drawer.value.show = false;
     fetchRows();
   } catch (e) {
-    message.error(e?.response?.data?.error || e.message || "Operation failed");
+    message.error(
+      e?.response?.data?.message ||
+        e?.response?.data?.error ||
+        e.message ||
+        "Operation failed"
+    );
   } finally {
     saving.value = false;
   }
 }
 
-/* ----- delete flow (confirm first) ----- */
+/* delete */
 function confirmDelete(r) {
   const id = r.tenantId || r.id;
   dialog.warning({
@@ -384,22 +698,113 @@ function confirmDelete(r) {
         fetchRows();
       } catch (e) {
         message.error(
-          e?.response?.data?.error || e.message || "Deletion failed"
+          e?.response?.data?.message ||
+            e?.response?.data?.error ||
+            e.message ||
+            "Deletion failed"
         );
       }
     },
   });
 }
 
-/* ----- navigate to tenant resources ----- */
+/* quotas drawer */
+function openQuotaDrawer(r) {
+  qDrawer.value = {
+    show: true,
+    tenantId: r.tenantId || r.id,
+    loading: true,
+    saving: false,
+    error: "",
+  };
+  qState.value = {
+    cpu: {},
+    memoryMB: {},
+    storageMB: {},
+    vmCount: {},
+    networkCount: {},
+  };
+  qForm.value = {
+    cpu: null,
+    vmCount: null,
+    networkCount: null,
+    memoryGB: null,
+    storageGB: null,
+  };
+
+  getTenantQuotas(qDrawer.value.tenantId)
+    .then((resp) => {
+      const data = resp?.data?.data || {};
+      qState.value = data;
+
+      // Pre-fill form with current limits (convert MB -> GB where relevant)
+      qForm.value.cpu = data?.cpu?.limit ?? null;
+      qForm.value.vmCount = data?.vmCount?.limit ?? null;
+      qForm.value.networkCount = data?.networkCount?.limit ?? null;
+
+      const memLimit = data?.memoryMB?.limit;
+      qForm.value.memoryGB =
+        memLimit === -1
+          ? -1
+          : Number.isFinite(memLimit)
+          ? Math.round(memLimit / 1024)
+          : null;
+
+      const storLimit = data?.storageMB?.limit;
+      qForm.value.storageGB =
+        storLimit === -1
+          ? -1
+          : Number.isFinite(storLimit)
+          ? Math.round(storLimit / 1024)
+          : null;
+    })
+    .catch((e) => {
+      qDrawer.value.error =
+        e?.response?.data?.message || e.message || "Failed to load quotas";
+    })
+    .finally(() => {
+      qDrawer.value.loading = false;
+    });
+}
+
+async function saveQuotaLimits() {
+  qDrawer.value.saving = true;
+  try {
+    const limits = {};
+    const add = (k, v) => {
+      if (v === 0 || v === -1 || !!v) limits[k] = Number(v);
+    };
+    add("cpu", qForm.value.cpu);
+    add("vmCount", qForm.value.vmCount);
+    add("networkCount", qForm.value.networkCount);
+    // GB -> MB
+    if (qForm.value.memoryGB === -1) limits.memoryMB = -1;
+    else if (qForm.value.memoryGB || qForm.value.memoryGB === 0)
+      limits.memoryMB = Math.max(0, Math.round(qForm.value.memoryGB * 1024));
+    if (qForm.value.storageGB === -1) limits.storageMB = -1;
+    else if (qForm.value.storageGB || qForm.value.storageGB === 0)
+      limits.storageMB = Math.max(0, Math.round(qForm.value.storageGB * 1024));
+
+    await patchTenantQuotaLimits(qDrawer.value.tenantId, limits);
+    message.success("Quota limits updated");
+
+    // refresh current state for meters
+    await openQuotaDrawer({ tenantId: qDrawer.value.tenantId });
+  } catch (e) {
+    message.error(
+      e?.response?.data?.message || e.message || "Failed to update limits"
+    );
+  } finally {
+    qDrawer.value.saving = false;
+  }
+}
+
+/* nav */
 function goResources(r) {
   const id = r.tenantId || r.id;
   const loc = { name: "admin-tenant-resources", params: { tenantId: id } };
-  // Keeping these logs for now; handy when route encoding acts up.
   const resolved = router.resolve(loc);
-  console.log("[goResources] loc =", loc);
   console.log("[goResources] href =", resolved.href);
-  console.log("[goResources] route =", resolved);
   router.push(loc);
 }
 

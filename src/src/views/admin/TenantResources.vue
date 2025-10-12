@@ -17,6 +17,8 @@
             :tenant-id="tenantId"
             :agents="agentOptions"
             @created="refreshAll"
+            @error="onTaskError"
+            @failed="onTaskError"
             :can-create="true"
           />
 
@@ -148,14 +150,6 @@
 </template>
 
 <script setup>
-/*
-  Tenant resources view (admin side).
-
-  Notes:
-  - Keep actions simple and discoverable from the row dropdown.
-  - Only send the minimum data required to the API.
-  - All labels/messages are English to match the rest of the admin UI.
-*/
 import {
   NGrid,
   NGridItem,
@@ -212,17 +206,15 @@ const ov = ref({
   storage: { usedMB: 0, provisionedMB: 0 },
   tasks: { last24h: { queued: 0, done: 0, error: 0 } },
 });
-const rows = ref([]); // VM list for this tenant
-const checked = ref([]); // selected row keys
-const agentOptions = ref([]); // for create VM button
+const rows = ref([]);
+const checked = ref([]);
+const agentOptions = ref([]);
 
-// Serial console modal state
 const consoleOpen = ref(false);
 const consoleWsUrl = ref(null);
 const consoleInfo = ref({ tunnelId: "", expiresAt: "" });
 const consoleVm = ref(null);
 
-// Edit VM modal (opened via ref)
 const editVm = ref(null);
 const editRef = ref(null);
 
@@ -444,9 +436,7 @@ function onSel(keys) {
   checked.value = keys;
 }
 
-/* ----- API mapping (GET resources) -----------------------------------------
-   The resources endpoint isn't uniform across agents. Normalize here once,
-   keep the UI simple elsewhere. */
+/* ----- API mapping (GET resources) ----- */
 function normalizeVM(item) {
   const guid = item.guid || item.id || item.refId || null;
   const nics = item.networkAdapters || item.nics || [];
@@ -503,7 +493,6 @@ async function loadOverview() {
 async function loadResources() {
   const res = await adminTenantResources(tenantId);
   const items = res?.data?.items || res?.data?.data || res?.data || [];
-  console.log(items);
   rows.value = (Array.isArray(items) ? items : []).map(normalizeVM);
 }
 
@@ -522,7 +511,7 @@ async function loadAgents() {
       .sort((x, y) => String(x.label).localeCompare(String(y.label)));
   } catch (e) {
     message.error(
-      e?.response?.data?.error || e.message || "Failed to load agents"
+      e?.response?.data?.message || e.message || "Failed to load agents"
     );
     agentOptions.value = [];
   }
@@ -535,7 +524,7 @@ async function refreshAll() {
     await Promise.all([loadOverview(), loadResources(), loadAgents()]);
   } catch (e) {
     message.error(
-      e?.response?.data?.error || e.message || "Failed to load data"
+      e?.response?.data?.message || e.message || "Failed to load data"
     );
   } finally {
     loading.value = false;
@@ -544,8 +533,61 @@ async function refreshAll() {
 
 onMounted(refreshAll);
 
-/* ----- task helpers (actions) ----------------------------------------------
-   Keep payloads tight. The backend resolves references from target + guid/name. */
+/* ----- error handling (quota-aware) ------------------------------------- */
+function handleApiError(e, context = "action") {
+  const status = e?.response?.status;
+  const code = e?.response?.data?.code || e?.code;
+  const msg =
+    e?.response?.data?.message ||
+    e?.response?.data?.error ||
+    e?.message ||
+    "Action failed";
+  const details = e?.response?.data?.details;
+
+  // Treat HTTP 409 as quota exceeded even if code is missing (Axios default msg is unhelpful)
+  if (code === "QUOTA_EXCEEDED" || status === 409) {
+    const reasons =
+      details?.reasons ||
+      details?.reason ||
+      (typeof msg === "string" && msg.includes("Quota exceeded")
+        ? [msg.replace(/^.*Quota exceeded:? ?/i, "")]
+        : []);
+    const list =
+      Array.isArray(reasons) && reasons.length
+        ? `\n\nDetails:\n- ${reasons.join("\n- ")}`
+        : "";
+
+    dialog.error({
+      title: "Quota exceeded",
+      content:
+        `The tenant has reached one or more quota limits.\n` +
+        `Action: ${context}${list}`,
+      positiveText: "OK",
+    });
+    return true;
+  }
+
+  // Other validation errors
+  if (status === 422) {
+    dialog.warning({
+      title: "Invalid request",
+      content: msg || "Please check the form values.",
+      positiveText: "OK",
+    });
+    return true;
+  }
+
+  // Fallback
+  message.error(msg);
+  return false;
+}
+
+// Hook errors from CreateVMButton (the component should emit error/failed with the axios error)
+function onTaskError(e) {
+  handleApiError(e, "vm.create");
+}
+
+/* ----- task helpers (actions) ------------------------------------------- */
 function vmTarget(r) {
   return { kind: "vm", agentId: r.agentId, refId: r.guid || r.id || r.name };
 }
@@ -560,7 +602,7 @@ async function power(r, state) {
     });
     message.success(`Action "${state}" sent to ${r.name}`);
   } catch (e) {
-    message.error(e?.response?.data?.error || e.message || "Action failed");
+    handleApiError(e, `vm.power:${state}`);
   }
 }
 
@@ -580,9 +622,7 @@ function removeVM(r) {
         });
         message.success(`Deletion requested for ${r.name}`);
       } catch (e) {
-        message.error(
-          e?.response?.data?.error || e.message || "Deletion failed"
-        );
+        handleApiError(e, "vm.delete");
       }
     },
   });
@@ -612,9 +652,7 @@ async function openConsole(r) {
     consoleWsUrl.value = c.wsUrl;
   } catch (e) {
     consoleOpen.value = false;
-    message.error(
-      e?.response?.data?.error || e.message || "Failed to open console"
-    );
+    handleApiError(e, "console.serial.open");
   }
 }
 
@@ -630,13 +668,12 @@ function onConsoleClosed() {
 /* ----- edit modal flow ----- */
 async function openEdit(r) {
   editVm.value = r;
-  await nextTick(); // ensure the modal is mounted
-  editRef.value?.open(); // open programmatically – no visible trigger
+  await nextTick();
+  editRef.value?.open();
 }
 </script>
 
 <style scoped>
-/* Layout spacing */
 .page {
   display: grid;
   gap: 12px;
@@ -645,7 +682,6 @@ async function openEdit(r) {
   margin-top: 8px;
 }
 
-/* Two-column sections that collapse on smaller screens */
 .two-col {
   display: grid;
   grid-template-columns: 1fr;
@@ -657,7 +693,6 @@ async function openEdit(r) {
   }
 }
 
-/* Small helper styles */
 .bar-fill {
   background: var(--n-primary-color);
 }
@@ -668,7 +703,6 @@ async function openEdit(r) {
   opacity: 0.9;
 }
 
-/* KPI cards: let content grow and pin footer to bottom */
 .kpi-grid :deep(.n-card) {
   min-height: var(--kpi-h, 128px);
   display: flex;
@@ -684,7 +718,6 @@ async function openEdit(r) {
   margin-top: auto;
 }
 
-/* Table niceties */
 .metric-big {
   font-size: 18px;
   font-weight: 700;
@@ -706,7 +739,6 @@ async function openEdit(r) {
   opacity: 0.9;
 }
 
-/* Secondary line under VM name */
 .vm-name .muted {
   font-size: 11px;
   opacity: 0.75;

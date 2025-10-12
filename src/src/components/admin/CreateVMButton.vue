@@ -196,8 +196,7 @@ import { ref, watch, computed } from "vue";
 import { AddOutline } from "@vicons/ionicons5";
 import { adminEnqueueTask } from "@/api/tasks";
 import { adminImages } from "@/api/resources";
-// TODO: implement this UI/API call when ready
-// import { adminNetworkProfiles } from "@/api/networks";
+// import { adminNetworkProfiles } from "@/api/networks"; // when ready
 
 const props = defineProps({
   tenantId: { type: String, required: true },
@@ -208,7 +207,9 @@ const props = defineProps({
     default: "You don't have permission to create VMs.",
   },
 });
-const emit = defineEmits(["created"]);
+
+// ⬇️ IMPORTANT: new emits so le parent peut catcher les erreurs (409, etc.)
+const emit = defineEmits(["created", "error", "failed"]);
 
 const show = ref(false);
 const submitting = ref(false);
@@ -240,7 +241,7 @@ const imageOptions = computed(() =>
 
 // Network profiles
 const netProfilesLoading = ref(false);
-const networkProfiles = ref([]); // [{ id, name, desc? }]
+const networkProfiles = ref([]);
 const networkProfileOptions = computed(() =>
   networkProfiles.value.map((n) => ({
     label: n.name || n.id,
@@ -259,7 +260,7 @@ const form = ref({
   dynamic_memory: true,
   min_ram: "1GB",
   max_ram: "4GB",
-  networkProfileId: "", // optional → tenant default if empty
+  networkProfileId: "",
   ci_user: "ubuntu",
   ci_ssh_key: "",
   ci_network_mode: "dhcp",
@@ -290,7 +291,7 @@ async function loadNetworkProfiles() {
     // const { data } = await adminNetworkProfiles({ tenantId: props.tenantId });
     // networkProfiles.value = data?.data || [];
     networkProfiles.value = []; // placeholder if API not ready
-  } catch (e) {
+  } catch {
     networkProfiles.value = [];
   } finally {
     netProfilesLoading.value = false;
@@ -302,7 +303,7 @@ function openModal() {
   if (!networkProfiles.value.length) loadNetworkProfiles();
 }
 
-/** Rules: no switch/generation in form */
+/** Rules */
 const rules = {
   tenantId: {
     required: true,
@@ -391,7 +392,7 @@ async function submit() {
       data: {
         name: form.value.name,
         generation: 2, // forced Gen2
-        ram: form.value.ram,
+        ram: form.value.ram, // string; backend enrich -> memoryMB for quotas
         cpu: form.value.cpu,
         dynamic_memory: form.value.dynamic_memory,
         ...(form.value.dynamic_memory
@@ -411,7 +412,10 @@ async function submit() {
     show.value = false;
     emit("created");
   } catch (e) {
-    message.error(e?.response?.data?.error || e.message || "Creation failed");
+    // ⬇️ Propager l’erreur au parent (qui gère 409/QUOTA_EXCEEDED proprement)
+    emit("error", e);
+    emit("failed", e);
+    // Pas de message.error ici pour éviter le doublon avec le parent.
   } finally {
     submitting.value = false;
   }
